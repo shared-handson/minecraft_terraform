@@ -6,6 +6,7 @@ resource "aws_instance" "proxy" {
   subnet_id                   = var.proxy_subnet_id
   vpc_security_group_ids      = [aws_security_group.proxy_sg.id]
   associate_public_ip_address = var.proxy_public_ip
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
 
   root_block_device {
     volume_type = "gp3"
@@ -20,6 +21,8 @@ resource "aws_instance" "proxy" {
     useradd -r -m -d /opt/minecraft -s /bin/bash mc || true
     mkdir -p /opt/minecraft/{velocity,logs}
     chown -R mc:mc /opt/minecraft
+    sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_arm64/amazon-ssm-agent.rpm
+    sudo systemctl enable amazon-ssm-agent --now
   EOF
 
   tags = { Name = "${var.name_prefix}-proxy" }
@@ -41,6 +44,9 @@ resource "aws_instance" "app" {
   subnet_id                   = var.app_subnet_id
   vpc_security_group_ids      = [aws_security_group.app_sg.id]
   associate_public_ip_address = var.app_public_ip
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  iam_instance_profile = aws_iam_instance_profile.app_profile.name
+  depends_on = [aws_instance.nat]
 
   root_block_device {
     volume_type = "gp3"
@@ -55,6 +61,8 @@ resource "aws_instance" "app" {
     useradd -r -m -d /opt/minecraft -s /bin/bash mc || true
     mkdir -p /opt/minecraft/{paper,logs}
     chown -R mc:mc /opt/minecraft
+    sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+    sudo systemctl enable amazon-ssm-agent --now
   EOF
 
   tags = { Name = "${var.name_prefix}-app" }
@@ -68,6 +76,8 @@ resource "aws_instance" "db" {
   subnet_id                   = var.db_subnet_id
   vpc_security_group_ids      = [aws_security_group.db_sg.id]
   associate_public_ip_address = var.db_public_ip
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  depends_on = [aws_instance.nat]
 
   root_block_device {
     volume_type = "gp3"
@@ -93,8 +103,50 @@ resource "aws_instance" "db" {
     query_cache_type=0
     CNF
     systemctl restart mariadb
+    sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_arm64/amazon-ssm-agent.rpm
+    sudo systemctl enable amazon-ssm-agent --now
   EOF
 
   tags = { Name = "${var.name_prefix}-db" }
 }
 
+# ========== NAT instance ==========
+# ARMで安く行く例（x86がよければ AL2023 x86 のAMIデータソースに差し替え）
+# data.aws_ami.al2023_arm は既存 data.tf に合わせてね。無ければ作成を。
+resource "aws_instance" "nat" {
+  ami                    = data.aws_ami.al2023_arm.id
+  instance_type          = "t4g.nano"
+  subnet_id              = var.proxy_subnet_id # Publicサブネットに置く
+  vpc_security_group_ids = [aws_security_group.nat_sg.id]
+  key_name               = var.key_name
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+
+  # NATには必須（転送機にする）
+  source_dest_check = false
+
+  # Public IP（EIPを付けるなら associate_public_ip と EIP を両方）
+  associate_public_ip_address = true
+
+  # IPフォワード + MASQUERADE（AL2023はnftables）
+  user_data = <<-EOS
+    #!/bin/bash
+    dnf install -y iptables-services
+    systemctl enable --now iptables
+    /sbin/iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
+    /sbin/iptables -F FORWARD
+    service iptables save
+    sysctl -w net.ipv4.conf.all.forwarding=1 >> /etc/sysctl.d/99-sysctl.conf
+    sysctl -p /etc/sysctl.d/99-sysctl.conf
+    cat << "EOF" >> /etc/ssh/sshd_config.d/portforward-only.conf
+    Match User ec2-user
+    AllowTcpForwarding yes
+    X11Forwarding no
+    AllowAgentForwarding no
+    PermitTTY no
+    systemctl restart sshd
+    sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_arm64/amazon-ssm-agent.rpm
+    sudo systemctl enable amazon-ssm-agent --now
+  EOS
+
+  tags = { Name = "${var.name_prefix}-nat" }
+}
