@@ -50,15 +50,7 @@ resource "aws_security_group" "app_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
-  }
-
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    security_groups = [aws_security_group.nat_sg.id]
+    security_groups = [aws_security_group.proxy_sg.id]
   }
 
   egress {
@@ -94,14 +86,6 @@ resource "aws_security_group" "db_sg" {
     security_groups = [aws_security_group.proxy_sg.id]
   }
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    security_groups = [aws_security_group.nat_sg.id]
-  }
-
   egress {
     description = "all egress"
     from_port   = 0
@@ -121,11 +105,11 @@ resource "aws_security_group" "nat_sg" {
 
   # 管理用（必要なら）
   ingress {
-    description = "SSH from admin"
+    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
+    security_groups = [aws_security_group.proxy_sg.id]
   }
 
   # プライベート側からのフォワード対象（VPCのIPv4に合わせる）

@@ -72,3 +72,4 @@ variable "private_route_table_ids" {
   type        = list(string)
   description = "Private route tables that need default route to NAT"
 }
+

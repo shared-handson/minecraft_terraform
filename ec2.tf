@@ -6,7 +6,7 @@ resource "aws_instance" "proxy" {
   subnet_id                   = var.proxy_subnet_id
   vpc_security_group_ids      = [aws_security_group.proxy_sg.id]
   associate_public_ip_address = var.proxy_public_ip
-  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  iam_instance_profile = aws_iam_instance_profile.proxy_profile.name
 
   root_block_device {
     volume_type = "gp3"
@@ -44,7 +44,6 @@ resource "aws_instance" "app" {
   subnet_id                   = var.app_subnet_id
   vpc_security_group_ids      = [aws_security_group.app_sg.id]
   associate_public_ip_address = var.app_public_ip
-  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
   iam_instance_profile = aws_iam_instance_profile.app_profile.name
   depends_on = [aws_instance.nat]
 
@@ -76,7 +75,7 @@ resource "aws_instance" "db" {
   subnet_id                   = var.db_subnet_id
   vpc_security_group_ids      = [aws_security_group.db_sg.id]
   associate_public_ip_address = var.db_public_ip
-  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  iam_instance_profile = aws_iam_instance_profile.db_profile.name
   depends_on = [aws_instance.nat]
 
   root_block_device {
@@ -119,7 +118,7 @@ resource "aws_instance" "nat" {
   subnet_id              = var.proxy_subnet_id # Publicサブネットに置く
   vpc_security_group_ids = [aws_security_group.nat_sg.id]
   key_name               = var.key_name
-  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  iam_instance_profile = aws_iam_instance_profile.nat_profile.name
 
   # NATには必須（転送機にする）
   source_dest_check = false
@@ -129,24 +128,30 @@ resource "aws_instance" "nat" {
 
   # IPフォワード + MASQUERADE（AL2023はnftables）
   user_data = <<-EOS
-    #!/bin/bash
-    dnf install -y iptables-services
-    systemctl enable --now iptables
-    /sbin/iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
-    /sbin/iptables -F FORWARD
-    service iptables save
-    sysctl -w net.ipv4.conf.all.forwarding=1 >> /etc/sysctl.d/99-sysctl.conf
-    sysctl -p /etc/sysctl.d/99-sysctl.conf
-    cat << "EOF" >> /etc/ssh/sshd_config.d/portforward-only.conf
-    Match User ec2-user
-    AllowTcpForwarding yes
-    X11Forwarding no
-    AllowAgentForwarding no
-    PermitTTY no
-    systemctl restart sshd
-    sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_arm64/amazon-ssm-agent.rpm
-    sudo systemctl enable amazon-ssm-agent --now
-  EOS
+#!/bin/bash
+dnf install -y iptables-services
+systemctl enable --now iptables
+/sbin/iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
+/sbin/iptables -F FORWARD
+service iptables save
+
+echo "net.ipv4.conf.all.forwarding=1" > /etc/sysctl.d/99-sysctl.conf
+sysctl -p /etc/sysctl.d/99-sysctl.conf
+
+dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_arm64/amazon-ssm-agent.rpm
+systemctl enable --now amazon-ssm-agent
+
+cat << "EOF" > /etc/ssh/sshd_config.d/portforward-only.conf
+Match User ec2-user
+AllowTcpForwarding yes
+X11Forwarding no
+AllowAgentForwarding no
+PermitTTY no
+EOF
+
+systemctl restart sshd
+EOS
+
 
   tags = { Name = "${var.name_prefix}-nat" }
 }
